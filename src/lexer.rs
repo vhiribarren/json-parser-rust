@@ -44,11 +44,6 @@ pub struct Context {
     column: usize,
 }
 
-pub struct LexerResult {
-    token: Token,
-    context: Context,
-}
-
 pub struct LexerError {
     message: String,
     context: Context,
@@ -76,18 +71,13 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn next_token(&mut self) -> Result<LexerResult, LexerError> {
+    pub fn next_token(&mut self) -> Result<Token, LexerError> {
         let c = match self.trim_whitespace_and_peek() {
             Some(val) => val,
-            None => {
-                return Ok(LexerResult {
-                    token: Token::EndOfData,
-                    context: self.build_context(),
-                })
-            }
+            None => return Ok(Token::EndOfData),
         };
 
-        let token = match c {
+        match c {
             'f' => {
                 self.consume_seq_and_emit(&['f', 'a', 'l', 's', 'e'], Token::ValueBoolean(false))
             }
@@ -101,28 +91,27 @@ impl<'a> Lexer<'a> {
             ']' => self.consume_next_and_emit(Token::ArrayEnd),
             '"' => self.consume_string(),
             '-' | '0'..='9' => self.consume_number(),
-            c => self.parse_error(String::from(c)),
-        }?;
-        let context = self.build_context();
-        Ok(LexerResult { context, token })
-    }
-
-    fn build_context(&self) -> Context {
-        Context {
-            line: self.line,
-            column: self.column,
+            c => Err(self.build_error(format!("The character '{}' is unexpected", c))),
         }
     }
+
+    fn build_error(&self, message: String) -> LexerError {
+        let context = Context {
+            line: self.line,
+            column: self.column,
+        };
+        LexerError { context, message }
+    }
+
     fn trim_whitespace_and_peek(&mut self) -> Option<char> {
         loop {
-            let &candidate = self.data_iter.peek()?;
-            match candidate {
+            match self.data_iter.peek()? {
                 ' ' | '\t' | '\r' => self.column += 1,
                 '\n' => {
                     self.column = 0;
                     self.line += 1;
                 }
-                _ => return Some(candidate),
+                &candidate => return Some(candidate),
             }
             self.data_iter.next();
         }
@@ -140,12 +129,14 @@ impl<'a> Lexer<'a> {
         token: Token,
     ) -> Result<Token, LexerError> {
         for &target_char in pattern.iter() {
-            let candidate_char = match self.data_iter.next() {
-                Some(c) => c,
-                None => return self.parse_error(String::from("")),
-            };
+            let candidate_char = self.data_iter.next().ok_or_else(|| {
+                self.build_error(format!("End of stream while waiting for '{}'", target_char))
+            })?;
             if candidate_char != target_char {
-                return self.parse_error(String::from(""));
+                return Err(self.build_error(format!(
+                    "Unexpected char '{}', was waiting for a '{}'",
+                    candidate_char, target_char
+                )));
             }
             self.column += 1;
         }
@@ -155,13 +146,14 @@ impl<'a> Lexer<'a> {
     fn consume_string(&mut self) -> Result<Token, LexerError> {
         match self.data_iter.next() {
             Some('"') => (),
-            _ => return self.parse_error(String::from("")),
+            _ => panic!("Logic error, next char should have been a '\"'"),
         }
         let mut result = String::new();
         let mut is_escaping = false;
         loop {
-            let c = self.data_iter.next().unwrap();
-            //.ok_or(self.parse_error(String::from("")))?;
+            let c = self.data_iter.next().ok_or_else(|| {
+                self.build_error(String::from("EOF encountered while recognizing a string"))
+            })?;
             if is_escaping {
                 let transcoded_char = match c {
                     '"' => '\u{0022}',
@@ -177,9 +169,18 @@ impl<'a> Lexer<'a> {
                         for _ in 0..4 {
                             unicode_char.push(self.data_iter.next().unwrap());
                         }
-                        string_to_unicode_char(unicode_char.as_str()).unwrap()
+                        string_to_unicode_char(unicode_char.as_str()).ok_or_else(|| {
+                            self.build_error(format!(
+                                "Could not convert {} to unicode",
+                                unicode_char
+                            ))
+                        })?
                     }
-                    _ => return self.parse_error(String::from("")),
+                    rest => {
+                        return Err(
+                            self.build_error(format!("'{} is not an escapable character'", rest))
+                        )
+                    }
                 };
                 result.push(transcoded_char);
                 is_escaping = false;
@@ -190,7 +191,7 @@ impl<'a> Lexer<'a> {
                 '"' => return Ok(Token::ValueString(result)),
                 '\x20' | '\x21' | '\x23'..='\x5B' | '\x5D'..='\u{10FFFF}' => result.push(c),
                 '\\' => is_escaping = true,
-                _ => return self.parse_error(String::from("")),
+                _ => return Err(self.build_error(String::from("Not a valid character code"))),
             };
         }
     }
@@ -222,7 +223,7 @@ impl<'a> Lexer<'a> {
                             self.data_iter.next();
                         }
                         '0'..='9' => (),
-                        _ => return self.parse_error(String::from("")),
+                        _ => panic!("Logic error, next char should have been a '-' or a number"),
                     };
                     step = Step::IntFirst;
                 }
@@ -300,17 +301,9 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
-        match f64::from_str(number.as_str()) {
-            Ok(res) => Ok(Token::ValueNumber(res)),
-            Err(_) => self.parse_error(String::from("")),
-        }
-    }
-
-    fn parse_error(&self, message: String) -> Result<Token, LexerError> {
-        Err(LexerError {
-            context: self.build_context(),
-            message,
-        })
+        f64::from_str(number.as_str())
+            .map(Token::ValueNumber)
+            .map_err(|_| self.build_error(format!("Could not convert '{}' to a number", number)))
     }
 }
 
@@ -327,7 +320,7 @@ mod tests {
         let mut lexer = Lexer::new(input);
         for target_token in target_result.iter() {
             match lexer.next_token() {
-                Ok(LexerResult { token, context: _ }) => match token {
+                Ok(token) => match token {
                     Token::ValueNumber(num) => {
                         if let Token::ValueNumber(target_num) = *target_token {
                             assert!(f64_eq(num, target_num));
@@ -488,10 +481,11 @@ mod tests {
     #[test]
     fn number_parsing() {
         // Also test the usage of lower & upper cases for escaped unicode
-        let input_data = "321 -21 54.321 -54.321 -12.34e+5 12.34e-5 -12.34e5";
+        let input_data = "321 -21 0.42 54.321 -54.321 -12.34e+5 12.34e-5 -12.34e5";
         let target_result = [
             Token::ValueNumber(321.),
             Token::ValueNumber(-21.),
+            Token::ValueNumber(0.42),
             Token::ValueNumber(54.321),
             Token::ValueNumber(-54.321),
             Token::ValueNumber(-12.34e+5),
