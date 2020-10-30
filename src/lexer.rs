@@ -36,7 +36,6 @@ pub enum Token {
     ValueNumber(f64),
     ValueBoolean(bool),
     ValueString(String),
-    EndOfData,
 }
 
 #[derive(Clone)]
@@ -46,8 +45,8 @@ pub struct Context {
 }
 
 pub struct LexerError {
-    message: String,
-    context: Context,
+    pub message: String,
+    pub context: Context,
 }
 
 pub struct Lexer<'a> {
@@ -62,21 +61,12 @@ fn string_to_unicode_char(number: &str) -> Option<char> {
         .and_then(std::char::from_u32)
 }
 
-impl<'a> Lexer<'a> {
-    pub fn new(data: &'a str) -> Lexer<'a> {
-        Lexer {
-            context: Context { column: 0, line: 0 },
-            data_iter: data.chars().peekable(),
-        }
-    }
+impl std::iter::Iterator for Lexer<'_> {
+    type Item = Result<Token, LexerError>;
 
-    pub fn next_token(&mut self) -> Result<Token, LexerError> {
-        let c = match self.trim_whitespace_and_peek() {
-            Some(val) => val,
-            None => return Ok(Token::EndOfData),
-        };
-
-        match c {
+    fn next(&mut self) -> Option<Self::Item> {
+        let c = self.trim_whitespace_and_peek()?;
+        let result = match c {
             'f' => {
                 self.consume_seq_and_emit(&['f', 'a', 'l', 's', 'e'], Token::ValueBoolean(false))
             }
@@ -91,6 +81,16 @@ impl<'a> Lexer<'a> {
             '"' => self.consume_string(),
             '-' | '0'..='9' => self.consume_number(),
             c => Err(self.build_error(format!("The character '{}' is unexpected", c))),
+        };
+        Some(result)
+    }
+}
+
+impl<'a> Lexer<'a> {
+    pub fn new(data: &'a str) -> Lexer<'a> {
+        Lexer {
+            context: Context { column: 0, line: 0 },
+            data_iter: data.chars().peekable(),
         }
     }
 
@@ -326,7 +326,8 @@ mod tests {
     fn parse_and_compare_seq(input: &str, target_result: &[Token]) {
         let mut lexer = Lexer::new(input);
         for target_token in target_result.iter() {
-            match lexer.next_token() {
+            let candidate = lexer.next().expect("No more token to be retrieved");
+            match candidate {
                 Ok(token) => match token {
                     Token::ValueNumber(num) => {
                         if let Token::ValueNumber(target_num) = *target_token {
@@ -344,23 +345,14 @@ mod tests {
 
     #[test]
     fn empty_string_is_eof() {
-        let input_data = "";
-        let target_result = [Token::EndOfData];
-        parse_and_compare_seq(&input_data, &target_result);
+        let mut lexer = Lexer::new("");
+        assert!(matches!(lexer.next(), None));
     }
 
     #[test]
     fn whitespace_string_is_eof() {
-        let input_data = " \t \n \r ";
-        let target_result = [Token::EndOfData];
-        parse_and_compare_seq(&input_data, &target_result);
-    }
-
-    #[test]
-    fn eof_after_eof() {
-        let input_data = "";
-        let target_result = [Token::EndOfData, Token::EndOfData, Token::EndOfData];
-        parse_and_compare_seq(&input_data, &target_result);
+        let mut lexer = Lexer::new( " \t \n \r ");
+        assert!(matches!(lexer.next(), None));
     }
 
     #[test]
@@ -373,7 +365,6 @@ mod tests {
             Token::ArrayEnd,
             Token::ObjectEnd,
             Token::ObjectStart,
-            Token::EndOfData,
         ];
         parse_and_compare_seq(&input_data, &target_result);
     }
@@ -388,7 +379,6 @@ mod tests {
             Token::ArrayEnd,
             Token::ObjectEnd,
             Token::ObjectStart,
-            Token::EndOfData,
         ];
         parse_and_compare_seq(&input_data, &target_result);
     }
@@ -400,7 +390,6 @@ mod tests {
             Token::ValueNull,
             Token::ValueBoolean(false),
             Token::ValueBoolean(true),
-            Token::EndOfData,
         ];
         parse_and_compare_seq(&input_data, &target_result);
     }
@@ -421,8 +410,8 @@ mod tests {
         let input_data = " nugget ";
         let mut lexer = Lexer::new(input_data);
         assert!(matches!(
-            lexer.next_token(),
-            Err(LexerError { message, context })
+            lexer.next(),
+            Some(Err(LexerError { message, context }))
         ));
     }
 
@@ -432,7 +421,6 @@ mod tests {
         let target_result = [
             Token::ValueString(String::from("hello")),
             Token::ValueString(String::from("world")),
-            Token::EndOfData,
         ];
         parse_and_compare_seq(&input_data, &target_result);
     }
@@ -443,7 +431,6 @@ mod tests {
         let target_result = [
             Token::ValueString(String::from("hel\"lo")),
             Token::ValueString(String::from("wor\tld")),
-            Token::EndOfData,
         ];
         parse_and_compare_seq(&input_data, &target_result);
     }
@@ -452,10 +439,10 @@ mod tests {
     fn bad_string_escape_is_error() {
         let input_data = "\"hel\"lo\"  \"wor\\tld\"  ";
         let mut lexer = Lexer::new(&input_data);
-        lexer.next_token();
+        lexer.next();
         assert!(matches!(
-            lexer.next_token(),
-            Err(LexerError { message, context })
+            lexer.next(),
+            Some(Err(LexerError { message, context }))
         ));
     }
 
@@ -470,7 +457,7 @@ mod tests {
     fn string_with_escaped_basic_plan_unicode() {
         // Also test the usage of lower & upper cases for escaped unicode
         let input_data = "\"go: \\u7881\"";
-        let target_result = [Token::ValueString(String::from("go: 碁")), Token::EndOfData];
+        let target_result = [Token::ValueString(String::from("go: 碁"))];
         parse_and_compare_seq(&input_data, &target_result);
     }
 
@@ -480,7 +467,6 @@ mod tests {
         let input_data = "\"cat: \\uD83D\\udc31\"";
         let target_result = [
             Token::ValueString(String::from("cat: 🐱")),
-            Token::EndOfData,
         ];
         parse_and_compare_seq(&input_data, &target_result);
     }
@@ -498,7 +484,6 @@ mod tests {
             Token::ValueNumber(-12.34e+5),
             Token::ValueNumber(12.34e-5),
             Token::ValueNumber(-12.34e5),
-            Token::EndOfData,
         ];
         parse_and_compare_seq(&input_data, &target_result);
     }
