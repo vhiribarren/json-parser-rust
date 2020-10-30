@@ -39,6 +39,7 @@ pub enum Token {
     EndOfData,
 }
 
+#[derive(Clone)]
 pub struct Context {
     line: usize,
     column: usize,
@@ -50,8 +51,7 @@ pub struct LexerError {
 }
 
 pub struct Lexer<'a> {
-    line: usize,
-    column: usize,
+    context: Context,
     data_iter: iter::Peekable<str::Chars<'a>>,
 }
 
@@ -65,8 +65,7 @@ fn string_to_unicode_char(number: &str) -> Option<char> {
 impl<'a> Lexer<'a> {
     pub fn new(data: &'a str) -> Lexer<'a> {
         Lexer {
-            line: 0,
-            column: 0,
+            context: Context { column: 0, line: 0 },
             data_iter: data.chars().peekable(),
         }
     }
@@ -95,31 +94,40 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn consume_char(&mut self) -> Option<char> {
+        let next_value = self.data_iter.next();
+        if let Some(c) = next_value {
+            match c {
+                '\n' => {
+                    self.context.column = 0;
+                    self.context.line += 1;
+                }
+                _ => self.context.column += 1,
+            }
+        }
+        next_value
+    }
+
+    fn peek_char(&mut self) -> Option<&char> {
+        self.data_iter.peek()
+    }
+
     fn build_error(&self, message: String) -> LexerError {
-        let context = Context {
-            line: self.line,
-            column: self.column,
-        };
+        let context = self.context.clone();
         LexerError { context, message }
     }
 
     fn trim_whitespace_and_peek(&mut self) -> Option<char> {
         loop {
-            match self.data_iter.peek()? {
-                ' ' | '\t' | '\r' => self.column += 1,
-                '\n' => {
-                    self.column = 0;
-                    self.line += 1;
-                }
+            match self.peek_char()? {
+                ' ' | '\t' | '\r' | '\n' => self.consume_char(),
                 &candidate => return Some(candidate),
-            }
-            self.data_iter.next();
+            };
         }
     }
 
     fn consume_next_and_emit(&mut self, token: Token) -> Result<Token, LexerError> {
-        self.data_iter.next();
-        self.column += 1;
+        self.consume_char();
         Ok(token)
     }
 
@@ -129,7 +137,7 @@ impl<'a> Lexer<'a> {
         token: Token,
     ) -> Result<Token, LexerError> {
         for &target_char in pattern.iter() {
-            let candidate_char = self.data_iter.next().ok_or_else(|| {
+            let candidate_char = self.consume_char().ok_or_else(|| {
                 self.build_error(format!("End of stream while waiting for '{}'", target_char))
             })?;
             if candidate_char != target_char {
@@ -138,20 +146,19 @@ impl<'a> Lexer<'a> {
                     candidate_char, target_char
                 )));
             }
-            self.column += 1;
         }
         Ok(token)
     }
 
     fn consume_string(&mut self) -> Result<Token, LexerError> {
-        match self.data_iter.next() {
+        match self.consume_char() {
             Some('"') => (),
             _ => panic!("Logic error, next char should have been a '\"'"),
         }
         let mut result = String::new();
         let mut is_escaping = false;
         loop {
-            let c = self.data_iter.next().ok_or_else(|| {
+            let c = self.consume_char().ok_or_else(|| {
                 self.build_error(String::from("EOF encountered while recognizing a string"))
             })?;
             if is_escaping {
@@ -167,7 +174,7 @@ impl<'a> Lexer<'a> {
                     'u' => {
                         let mut unicode_char = String::new();
                         for _ in 0..4 {
-                            unicode_char.push(self.data_iter.next().unwrap());
+                            unicode_char.push(self.consume_char().unwrap());
                         }
                         string_to_unicode_char(unicode_char.as_str()).ok_or_else(|| {
                             self.build_error(format!(
@@ -211,7 +218,7 @@ impl<'a> Lexer<'a> {
         let mut step = Step::Minus;
         let mut number = String::new();
         'outer: loop {
-            let &c = match self.data_iter.peek() {
+            let &c = match self.peek_char() {
                 None => break 'outer,
                 Some(val) => val,
             };
@@ -220,7 +227,7 @@ impl<'a> Lexer<'a> {
                     match c {
                         '-' => {
                             number.push(c);
-                            self.data_iter.next();
+                            self.consume_char();
                         }
                         '0'..='9' => (),
                         _ => panic!("Logic error, next char should have been a '-' or a number"),
@@ -234,7 +241,7 @@ impl<'a> Lexer<'a> {
                         _ => break 'outer,
                     }
                     number.push(c);
-                    self.data_iter.next();
+                    self.consume_char();
                 }
                 Step::Int => {
                     match c {
@@ -244,7 +251,7 @@ impl<'a> Lexer<'a> {
                         _ => break 'outer,
                     }
                     number.push(c);
-                    self.data_iter.next();
+                    self.consume_char();
                 }
                 Step::FracOrExp => {
                     match c {
@@ -253,7 +260,7 @@ impl<'a> Lexer<'a> {
                         _ => break 'outer,
                     }
                     number.push(c);
-                    self.data_iter.next();
+                    self.consume_char();
                 }
                 Step::FracFirst => {
                     match c {
@@ -261,7 +268,7 @@ impl<'a> Lexer<'a> {
                         _ => break 'outer,
                     }
                     number.push(c);
-                    self.data_iter.next();
+                    self.consume_char();
                 }
                 Step::Frac => {
                     match c {
@@ -270,13 +277,13 @@ impl<'a> Lexer<'a> {
                         _ => break 'outer,
                     }
                     number.push(c);
-                    self.data_iter.next();
+                    self.consume_char();
                 }
                 Step::ExpSign => {
                     match c {
                         '+' | '-' => {
                             number.push(c);
-                            self.data_iter.next();
+                            self.consume_char();
                         }
                         '0'..='9' => (),
                         _ => break 'outer,
@@ -289,7 +296,7 @@ impl<'a> Lexer<'a> {
                         _ => break 'outer,
                     }
                     number.push(c);
-                    self.data_iter.next();
+                    self.consume_char();
                 }
                 Step::Exp => {
                     match c {
@@ -297,7 +304,7 @@ impl<'a> Lexer<'a> {
                         _ => break 'outer,
                     }
                     number.push(c);
-                    self.data_iter.next();
+                    self.consume_char();
                 }
             }
         }
