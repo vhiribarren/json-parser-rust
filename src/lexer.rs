@@ -25,6 +25,7 @@ use std::str;
 use std::str::FromStr;
 
 #[derive(Debug, PartialEq)]
+#[cfg_attr(test, derive(Clone))]
 pub enum Token {
     ArrayStart,
     ArrayEnd,
@@ -38,7 +39,7 @@ pub enum Token {
     ValueString(String),
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct Context {
     pub line: usize,
     pub column: usize,
@@ -55,6 +56,7 @@ pub struct Lexer<'a> {
     char_context: Context,
     token_context: Context,
     data_iter: iter::Peekable<str::Chars<'a>>,
+    peeked_result: Option<Option<LexerResult>>,
 }
 
 fn string_to_unicode_char(number: &str) -> Option<char> {
@@ -68,6 +70,9 @@ impl std::iter::Iterator for Lexer<'_> {
     type Item = LexerResult;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(val) = self.peeked_result.take() {
+            return val;
+        }
         let c = self.trim_whitespace_and_peek()?;
         self.set_token_context();
         let result = match c {
@@ -96,7 +101,17 @@ impl<'a> Lexer<'a> {
             char_context: Default::default(),
             token_context: Default::default(),
             data_iter: data.chars().peekable(),
+            peeked_result: None,
         }
+    }
+
+    pub fn peek(&mut self) -> Option<&LexerResult> {
+        let next_result = if self.peeked_result.is_none() {
+            self.next()
+        } else {
+            None
+        };
+        self.peeked_result.get_or_insert(next_result).as_ref()
     }
 
     pub fn last_token_context(&self) -> Context {
@@ -143,15 +158,11 @@ impl<'a> Lexer<'a> {
         Ok(token)
     }
 
-    fn consume_seq_and_emit(
-        &mut self,
-        pattern: &[char],
-        token: Token,
-    ) -> LexerResult {
+    fn consume_seq_and_emit(&mut self, pattern: &[char], token: Token) -> LexerResult {
         for &target_char in pattern.iter() {
-            let candidate_char = self.consume_char().ok_or_else(|| {
-                format!("End of stream while waiting for '{}'", target_char)
-            })?;
+            let candidate_char = self
+                .consume_char()
+                .ok_or_else(|| format!("End of stream while waiting for '{}'", target_char))?;
             if candidate_char != target_char {
                 return Err(format!(
                     "Unexpected char '{}', was waiting for a '{}'",
@@ -170,9 +181,9 @@ impl<'a> Lexer<'a> {
         let mut result = String::new();
         let mut is_escaping = false;
         loop {
-            let c = self.consume_char().ok_or_else(|| {
-                String::from("EOF encountered while recognizing a string")
-            })?;
+            let c = self
+                .consume_char()
+                .ok_or_else(|| String::from("EOF encountered while recognizing a string"))?;
             if is_escaping {
                 let transcoded_char = match c {
                     '"' => '\u{0022}',
@@ -189,15 +200,10 @@ impl<'a> Lexer<'a> {
                             unicode_char.push(self.consume_char().unwrap());
                         }
                         string_to_unicode_char(unicode_char.as_str()).ok_or_else(|| {
-                            format!(
-                                "Could not convert {} to unicode",
-                                unicode_char
-                            )
+                            format!("Could not convert {} to unicode", unicode_char)
                         })?
                     }
-                    rest => {
-                        return Err(format!("'{} is not an escapable character'", rest))
-                    }
+                    rest => return Err(format!("'{} is not an escapable character'", rest)),
                 };
                 result.push(transcoded_char);
                 is_escaping = false;
@@ -361,7 +367,7 @@ mod tests {
 
     #[test]
     fn whitespace_string_is_eof() {
-        let mut lexer = Lexer::new( " \t \n \r ");
+        let mut lexer = Lexer::new(" \t \n \r ");
         assert!(matches!(lexer.next(), None));
     }
 
@@ -419,10 +425,7 @@ mod tests {
     fn bad_token_is_error() {
         let input_data = " nugget ";
         let mut lexer = Lexer::new(input_data);
-        assert!(matches!(
-            lexer.next(),
-            Some(Err(_))
-        ));
+        assert!(matches!(lexer.next(), Some(Err(_))));
     }
 
     #[test]
@@ -450,10 +453,7 @@ mod tests {
         let input_data = "\"hel\"lo\"  \"wor\\tld\"  ";
         let mut lexer = Lexer::new(&input_data);
         lexer.next();
-        assert!(matches!(
-            lexer.next(),
-            Some(Err(_))
-        ));
+        assert!(matches!(lexer.next(), Some(Err(_))));
     }
 
     #[test]
@@ -475,9 +475,7 @@ mod tests {
     fn string_with_escaped_surrogate_pairs() {
         // Also test the usage of lower & upper cases for escaped unicode
         let input_data = "\"cat: \\uD83D\\udc31\"";
-        let target_result = [
-            Token::ValueString(String::from("cat: 🐱")),
-        ];
+        let target_result = [Token::ValueString(String::from("cat: 🐱"))];
         parse_and_compare_seq(&input_data, &target_result);
     }
 
@@ -497,4 +495,16 @@ mod tests {
         ];
         parse_and_compare_seq(&input_data, &target_result);
     }
+
+    #[test]
+    fn peek_and_next_is_equal() {
+        let mut lexer = Lexer::new("true");
+        let peek_result = (*lexer.peek().unwrap().as_ref().unwrap()).clone();
+        let next_result = lexer.next().unwrap().unwrap();
+        let end_result = lexer.next();
+        assert_eq!(peek_result, Token::ValueBoolean(true));
+        assert_eq!(peek_result, next_result);
+        assert!(end_result.is_none());
+    }
+
 }
