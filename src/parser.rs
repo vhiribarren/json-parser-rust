@@ -59,10 +59,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse(&mut self) -> Result<Json, JsonError> {
-        match self.parse_json_value()? {
-            None => Err(JsonError::Other(String::from("There is no data to parse"))),
-            Some(json) => Ok(json),
-        }
+        self.parse_json_value()
     }
 
     fn build_parser_error(&self, message: String) -> JsonError {
@@ -80,7 +77,23 @@ impl<'a> Parser<'a> {
         Ok(self.current_token_info = token_info_result?)
     }
 
-    fn parse_json_value(&mut self) -> Result<Option<Json>, JsonError> {
+    fn advance_and_validate(&mut self, token: Token) -> Result<(), JsonError> {
+        let token_result = self
+            .lexer
+            .next()
+            .ok_or_else(|| JsonError::Other(String::from("No data to parse")))??
+            .token;
+        if token_result == token {
+            Ok(())
+        } else {
+            Err(self.build_parser_error(format!(
+                "Was waiting {:?} but received {:?}",
+                token, token_result
+            )))
+        }
+    }
+
+    fn parse_json_value(&mut self) -> Result<Json, JsonError> {
         let result = match &self.current_token_info.token {
             Token::ArrayStart => Json::Array(self.parse_array()?),
             Token::ObjectStart => Json::Object(self.parse_object()?),
@@ -90,7 +103,7 @@ impl<'a> Parser<'a> {
             Token::ValueString(s) => Json::String(s.to_string()),
             other => return Err(self.build_parser_error(format!("The token '{:?}' is not valid here, was waiting the start of an array, object or a value", other))),
         };
-        Ok(Some(result))
+        Ok(result)
     }
 
     fn parse_array(&mut self) -> Result<Vec<Json>, JsonError> {
@@ -98,7 +111,39 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_object(&mut self) -> Result<HashMap<String, Json>, JsonError> {
-        unimplemented!()
+        assert_eq!(self.current_token_info.token, Token::ObjectStart);
+        let mut map = HashMap::new();
+        self.advance()?;
+        if let Token::ObjectEnd = self.current_token_info.token {
+            return Ok(map);
+        }
+        loop {
+            let key = match &self.current_token_info.token {
+                Token::ValueString(val) => val.clone(),
+                other => {
+                    return Err(self.build_parser_error(format!(
+                        "Was waiting a string but received {:?}",
+                        other
+                    )))
+                }
+            };
+            self.advance_and_validate(Token::SeparatorName)?;
+            self.advance()?;
+            let value = self.parse_json_value()?;
+            map.insert(key, value);
+            self.advance()?;
+            match &self.current_token_info.token {
+                Token::ObjectEnd => return Ok(map),
+                Token::SeparatorValue => {}
+                other => {
+                    return Err(self.build_parser_error(format!(
+                        "Was waiting a ',' or '}}' but received {:?}",
+                        other
+                    )))
+                }
+            }
+            self.advance()?;
+        }
     }
 }
 
@@ -129,6 +174,31 @@ mod tests {
     fn simple_null() {
         let input = r#" null "#;
         let target = Json::Null;
+        cmp_input_and_result(input, target);
+    }
+
+    #[test]
+    fn simple_object() {
+        let input = r#" {"one": "un", "two": 2, "three": null, "four": false} "#;
+        let mut map = HashMap::new();
+        map.insert("one".to_string(), Json::String("un".to_string()));
+        map.insert("two".to_string(), Json::Number(2.0));
+        map.insert("three".to_string(), Json::Null);
+        map.insert("four".to_string(), Json::Boolean(false));
+        let target = Json::Object(map);
+        cmp_input_and_result(input, target);
+    }
+
+    #[test]
+    fn hierarchical_object() {
+        let input = r#" {"one": "un", "two": {"three": null, "four": false}} "#;
+        let mut map_inner = HashMap::new();
+        map_inner.insert("three".to_string(), Json::Null);
+        map_inner.insert("four".to_string(), Json::Boolean(false));
+        let mut map_outer = HashMap::new();
+        map_outer.insert("one".to_string(), Json::String("un".to_string()));
+        map_outer.insert("two".to_string(), Json::Object(map_inner));
+        let target = Json::Object(map_outer);
         cmp_input_and_result(input, target);
     }
 }
