@@ -28,10 +28,16 @@ pub use parser::parse_json;
 pub use parser::{Json, Parser};
 use std::fmt;
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct Context {
     pub line: usize,
     pub column: usize,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self {line: 1, column: 1,}
+    }
 }
 
 #[derive(Debug)]
