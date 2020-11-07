@@ -21,6 +21,11 @@ SOFTWARE.
 */
 
 mod lexer;
+mod parser;
+
+pub use lexer::Lexer;
+pub use parser::parse_json;
+pub use parser::{Json, Parser};
 
 #[derive(Clone, Default, Debug)]
 pub struct Context {
@@ -30,8 +35,7 @@ pub struct Context {
 
 #[derive(Debug)]
 pub enum JsonError {
-    Lexer {context: Context, message: String},
-    Parser {context: Context, message: String},
-    Other(String)
+    Lexer { context: Context, message: String },
+    Parser { context: Context, message: String },
+    Other(String),
 }
-

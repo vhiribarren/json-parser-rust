@@ -20,10 +20,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+use crate::{Context, JsonError};
 use std::iter;
 use std::str;
 use std::str::FromStr;
-use crate::{JsonError, Context};
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(test, derive(Clone))]
@@ -121,7 +121,7 @@ impl<'a> Lexer<'a> {
 
     fn build_result(&self, token: Token) -> TokenInfo {
         let context = self.token_context.clone();
-        TokenInfo {context, token}
+        TokenInfo { context, token }
     }
 
     fn build_error(&self, message: String) -> JsonError {
@@ -167,9 +167,9 @@ impl<'a> Lexer<'a> {
 
     fn consume_seq_and_emit(&mut self, pattern: &[char], token: Token) -> LexerResult {
         for &target_char in pattern.iter() {
-            let candidate_char = self
-                .consume_char()
-                .ok_or_else(|| self.build_error(format!("End of stream while waiting for '{}'", target_char)))?;
+            let candidate_char = self.consume_char().ok_or_else(|| {
+                self.build_error(format!("End of stream while waiting for '{}'", target_char))
+            })?;
             if candidate_char != target_char {
                 return Err(self.build_error(format!(
                     "Unexpected char '{}', was waiting for a '{}'",
@@ -188,9 +188,9 @@ impl<'a> Lexer<'a> {
         let mut result = String::new();
         let mut is_escaping = false;
         loop {
-            let c = self
-                .consume_char()
-                .ok_or_else(|| self.build_error(String::from("EOF encountered while recognizing a string")))?;
+            let c = self.consume_char().ok_or_else(|| {
+                self.build_error(String::from("EOF encountered while recognizing a string"))
+            })?;
             if is_escaping {
                 let transcoded_char = match c {
                     '"' => '\u{0022}',
@@ -207,10 +207,17 @@ impl<'a> Lexer<'a> {
                             unicode_char.push(self.consume_char().unwrap());
                         }
                         string_to_unicode_char(unicode_char.as_str()).ok_or_else(|| {
-                            self.build_error(format!("Could not convert {} to unicode", unicode_char))
+                            self.build_error(format!(
+                                "Could not convert {} to unicode",
+                                unicode_char
+                            ))
                         })?
                     }
-                    rest => return Err(self.build_error(format!("'{} is not an escapable character'", rest))),
+                    rest => {
+                        return Err(
+                            self.build_error(format!("'{} is not an escapable character'", rest))
+                        )
+                    }
                 };
                 result.push(transcoded_char);
                 is_escaping = false;
@@ -359,11 +366,10 @@ mod tests {
                         } else {
                             panic!("The token is not a ValueNumber");
                         }
-                    },
+                    }
                     _ => assert_eq!(token, *target_token),
                 }
-            }
-            else {
+            } else {
                 panic!("Token is invalid, cannot be parsed.")
             }
         }
@@ -516,5 +522,4 @@ mod tests {
         assert_eq!(peek_token, next_token);
         assert!(end_result.is_none());
     }
-
 }
