@@ -21,7 +21,7 @@ SOFTWARE.
 */
 
 use clap::Clap;
-use json_parser::{parse_json, Json, JsonError};
+use json_parser::parse_json;
 use std::fs;
 
 #[derive(Clap)]

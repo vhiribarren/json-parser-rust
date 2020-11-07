@@ -36,7 +36,7 @@ pub struct Context {
 
 impl Default for Context {
     fn default() -> Self {
-        Self {line: 1, column: 1,}
+        Self { line: 1, column: 1 }
     }
 }
 
