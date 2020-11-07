@@ -20,41 +20,35 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-mod lexer;
-mod parser;
+use clap::Clap;
+use json_parser::{parse_json, Json, JsonError};
+use std::fs;
 
-pub use lexer::Lexer;
-pub use parser::parse_json;
-pub use parser::{Json, Parser};
-use std::fmt;
-
-#[derive(Clone, Default, Debug)]
-pub struct Context {
-    pub line: usize,
-    pub column: usize,
+#[derive(Clap)]
+struct Opts {
+    #[clap(short, long)]
+    string: Option<String>,
+    #[clap(short, long)]
+    file: Option<String>,
 }
 
-#[derive(Debug)]
-pub enum JsonError {
-    Lexer { context: Context, message: String },
-    Parser { context: Context, message: String },
-    Other(String),
+fn main() {
+    let opts: Opts = Opts::parse();
+    if opts.file.is_some() && opts.string.is_some() {
+        println!("Please select only one option");
+    } else if let Some(data) = opts.string {
+        start_parsing(data.as_str());
+    } else if let Some(file) = opts.file {
+        let data = fs::read_to_string(file).expect("Something went wrong reading the file");
+        start_parsing(data.as_str());
+    } else {
+        println!("Please add an option");
+    }
 }
 
-impl fmt::Display for JsonError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            JsonError::Lexer { context, message } => write!(
-                f,
-                "Lexer error, line {} column {}: {}",
-                context.line, context.column, message
-            ),
-            JsonError::Parser { context, message } => write!(
-                f,
-                "Parser error, line {} column {}: {}",
-                context.line, context.column, message
-            ),
-            JsonError::Other(message) => write!(f, "Other error: {}", message),
-        }
+fn start_parsing(data: &str) {
+    match parse_json(data) {
+        Ok(json) => println!("{:?}", json),
+        Err(error) => println!("{}", error),
     }
 }

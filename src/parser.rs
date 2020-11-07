@@ -74,7 +74,8 @@ impl<'a> Parser<'a> {
             .lexer
             .next()
             .ok_or_else(|| JsonError::Other(String::from("No data to parse")))?;
-        Ok(self.current_token_info = token_info_result?)
+        self.current_token_info = token_info_result?;
+        Ok(())
     }
 
     fn advance_and_validate(&mut self, token: Token) -> Result<(), JsonError> {

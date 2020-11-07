@@ -16,6 +16,7 @@ To build:
 
     $ cargo build
 
-or
+Some examples:
 
     $ cargo test
+    $ cargo run --example json-debug -- -s '{"one": 1, "two": {"table":[1, null, true, {"bloup": 3}]}}'
