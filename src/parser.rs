@@ -107,7 +107,28 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_array(&mut self) -> Result<Vec<Json>, JsonError> {
-        unimplemented!()
+        assert_eq!(self.current_token_info.token, Token::ArrayStart);
+        let mut vec = Vec::new();
+        self.advance()?;
+        if let Token::ArrayEnd = self.current_token_info.token {
+            return Ok(vec);
+        }
+        loop {
+            let value = self.parse_json_value()?;
+            vec.push(value);
+            self.advance()?;
+            match &self.current_token_info.token {
+                Token::ArrayEnd => return Ok(vec),
+                Token::SeparatorValue => {}
+                other => {
+                    return Err(self.build_parser_error(format!(
+                        "Was waiting a ',' or ']' but received {:?}",
+                        other
+                    )))
+                }
+            }
+            self.advance()?;
+        }
     }
 
     fn parse_object(&mut self) -> Result<HashMap<String, Json>, JsonError> {
@@ -190,6 +211,14 @@ mod tests {
     }
 
     #[test]
+    fn empty_object() {
+        let input = r#" {} "#;
+        let map = HashMap::new();
+        let target = Json::Object(map);
+        cmp_input_and_result(input, target);
+    }
+
+    #[test]
     fn hierarchical_object() {
         let input = r#" {"one": "un", "two": {"three": null, "four": false}} "#;
         let mut map_inner = HashMap::new();
@@ -199,6 +228,32 @@ mod tests {
         map_outer.insert("one".to_string(), Json::String("un".to_string()));
         map_outer.insert("two".to_string(), Json::Object(map_inner));
         let target = Json::Object(map_outer);
+        cmp_input_and_result(input, target);
+    }
+
+    #[test]
+    fn object_with_invalid_key_is_error() {
+        let input = r#" {badkey: false} "#;
+        assert!(parse_json(input).is_err());
+    }
+
+    #[test]
+    fn simple_array() {
+        let input = r#" [1, "deux", null, true] "#;
+        let mut vec = Vec::new();
+        vec.push(Json::Number(1.0));
+        vec.push(Json::String("deux".to_string()));
+        vec.push(Json::Null);
+        vec.push(Json::Boolean(true));
+        let target = Json::Array(vec);
+        cmp_input_and_result(input, target);
+    }
+
+    #[test]
+    fn empty_array() {
+        let input = r#" [] "#;
+        let vec = Vec::new();
+        let target = Json::Array(vec);
         cmp_input_and_result(input, target);
     }
 }
