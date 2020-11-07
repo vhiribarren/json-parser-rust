@@ -23,6 +23,7 @@ SOFTWARE.
 use std::iter;
 use std::str;
 use std::str::FromStr;
+use crate::{JsonError, Context};
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(test, derive(Clone))]
@@ -39,16 +40,12 @@ pub enum Token {
     ValueString(String),
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct Context {
-    pub line: usize,
-    pub column: usize,
-}
+pub type LexerResult = Result<TokenInfo, JsonError>;
 
-pub type LexerResult = Result<Token, String>;
-
-pub struct LexerError {
-    pub message: String,
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
+pub struct TokenInfo {
+    pub token: Token,
     pub context: Context,
 }
 
@@ -89,7 +86,7 @@ impl std::iter::Iterator for Lexer<'_> {
             ']' => self.consume_next_and_emit(Token::ArrayEnd),
             '"' => self.consume_string(),
             '-' | '0'..='9' => self.consume_number(),
-            c => Err(format!("The character '{}' is unexpected", c)),
+            c => Err(self.build_error(format!("The character '{}' is unexpected", c))),
         };
         Some(result)
     }
@@ -120,6 +117,16 @@ impl<'a> Lexer<'a> {
 
     pub fn last_char_context(&self) -> Context {
         self.char_context.clone()
+    }
+
+    fn build_result(&self, token: Token) -> TokenInfo {
+        let context = self.token_context.clone();
+        TokenInfo {context, token}
+    }
+
+    fn build_error(&self, message: String) -> JsonError {
+        let context = self.char_context.clone();
+        JsonError::Lexer { context, message }
     }
 
     fn set_token_context(&mut self) {
@@ -155,22 +162,22 @@ impl<'a> Lexer<'a> {
 
     fn consume_next_and_emit(&mut self, token: Token) -> LexerResult {
         self.consume_char();
-        Ok(token)
+        Ok(self.build_result(token))
     }
 
     fn consume_seq_and_emit(&mut self, pattern: &[char], token: Token) -> LexerResult {
         for &target_char in pattern.iter() {
             let candidate_char = self
                 .consume_char()
-                .ok_or_else(|| format!("End of stream while waiting for '{}'", target_char))?;
+                .ok_or_else(|| self.build_error(format!("End of stream while waiting for '{}'", target_char)))?;
             if candidate_char != target_char {
-                return Err(format!(
+                return Err(self.build_error(format!(
                     "Unexpected char '{}', was waiting for a '{}'",
                     candidate_char, target_char
-                ));
+                )));
             }
         }
-        Ok(token)
+        Ok(self.build_result(token))
     }
 
     fn consume_string(&mut self) -> LexerResult {
@@ -183,7 +190,7 @@ impl<'a> Lexer<'a> {
         loop {
             let c = self
                 .consume_char()
-                .ok_or_else(|| String::from("EOF encountered while recognizing a string"))?;
+                .ok_or_else(|| self.build_error(String::from("EOF encountered while recognizing a string")))?;
             if is_escaping {
                 let transcoded_char = match c {
                     '"' => '\u{0022}',
@@ -200,10 +207,10 @@ impl<'a> Lexer<'a> {
                             unicode_char.push(self.consume_char().unwrap());
                         }
                         string_to_unicode_char(unicode_char.as_str()).ok_or_else(|| {
-                            format!("Could not convert {} to unicode", unicode_char)
+                            self.build_error(format!("Could not convert {} to unicode", unicode_char))
                         })?
                     }
-                    rest => return Err(format!("'{} is not an escapable character'", rest)),
+                    rest => return Err(self.build_error(format!("'{} is not an escapable character'", rest))),
                 };
                 result.push(transcoded_char);
                 is_escaping = false;
@@ -211,10 +218,10 @@ impl<'a> Lexer<'a> {
             }
 
             match c {
-                '"' => return Ok(Token::ValueString(result)),
+                '"' => return Ok(self.build_result(Token::ValueString(result))),
                 '\x20' | '\x21' | '\x23'..='\x5B' | '\x5D'..='\u{10FFFF}' => result.push(c),
                 '\\' => is_escaping = true,
-                _ => return Err(String::from("Not a valid character code")),
+                _ => return Err(self.build_error(String::from("Not a valid character code"))),
             };
         }
     }
@@ -325,8 +332,8 @@ impl<'a> Lexer<'a> {
             }
         }
         f64::from_str(number.as_str())
-            .map(Token::ValueNumber)
-            .map_err(|_| format!("Could not convert '{}' to a number", number))
+            .map(|val| self.build_result(Token::ValueNumber(val)))
+            .map_err(|_| self.build_error(format!("Could not convert '{}' to a number", number)))
     }
 }
 
@@ -343,19 +350,22 @@ mod tests {
         let mut lexer = Lexer::new(input);
         for target_token in target_result.iter() {
             let candidate = lexer.next().expect("No more token to be retrieved");
-            match candidate {
-                Ok(token) => match token {
+            if let Ok(token_info) = candidate {
+                let token = token_info.token;
+                match token {
                     Token::ValueNumber(num) => {
                         if let Token::ValueNumber(target_num) = *target_token {
                             assert!(f64_eq(num, target_num));
                         } else {
                             panic!("The token is not a ValueNumber");
                         }
-                    }
+                    },
                     _ => assert_eq!(token, *target_token),
-                },
-                Err(_) => panic!("Token is invalid, cannot be parsed."),
-            };
+                }
+            }
+            else {
+                panic!("Token is invalid, cannot be parsed.")
+            }
         }
     }
 
@@ -499,11 +509,11 @@ mod tests {
     #[test]
     fn peek_and_next_is_equal() {
         let mut lexer = Lexer::new("true");
-        let peek_result = (*lexer.peek().unwrap().as_ref().unwrap()).clone();
-        let next_result = lexer.next().unwrap().unwrap();
+        let peek_token = (*lexer.peek().unwrap().as_ref().unwrap()).clone().token;
+        let next_token = lexer.next().unwrap().unwrap().token;
         let end_result = lexer.next();
-        assert_eq!(peek_result, Token::ValueBoolean(true));
-        assert_eq!(peek_result, next_result);
+        assert_eq!(peek_token, Token::ValueBoolean(true));
+        assert_eq!(peek_token, next_token);
         assert!(end_result.is_none());
     }
 

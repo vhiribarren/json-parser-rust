@@ -21,3 +21,17 @@ SOFTWARE.
 */
 
 mod lexer;
+
+#[derive(Clone, Default, Debug)]
+pub struct Context {
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Debug)]
+pub enum JsonError {
+    Lexer {context: Context, message: String},
+    Parser {context: Context, message: String},
+    Other(String)
+}
+
