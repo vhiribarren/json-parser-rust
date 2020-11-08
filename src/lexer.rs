@@ -53,7 +53,6 @@ pub struct Lexer<'a> {
     char_context: Context,
     token_context: Context,
     data_iter: iter::Peekable<str::Chars<'a>>,
-    peeked_result: Option<Option<LexerResult>>,
 }
 
 fn string_to_unicode_char(number: &str) -> Option<char> {
@@ -67,9 +66,6 @@ impl std::iter::Iterator for Lexer<'_> {
     type Item = LexerResult;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(val) = self.peeked_result.take() {
-            return val;
-        }
         let c = self.trim_whitespace_and_peek()?;
         self.set_token_context();
         let result = match c {
@@ -98,25 +94,7 @@ impl<'a> Lexer<'a> {
             char_context: Default::default(),
             token_context: Default::default(),
             data_iter: data.chars().peekable(),
-            peeked_result: None,
         }
-    }
-
-    pub fn peek(&mut self) -> Option<&LexerResult> {
-        let next_result = if self.peeked_result.is_none() {
-            self.next()
-        } else {
-            None
-        };
-        self.peeked_result.get_or_insert(next_result).as_ref()
-    }
-
-    pub fn last_token_context(&self) -> Context {
-        self.token_context.clone()
-    }
-
-    pub fn last_char_context(&self) -> Context {
-        self.char_context.clone()
     }
 
     fn build_result(&self, token: Token) -> TokenInfo {
@@ -510,16 +488,5 @@ mod tests {
             Token::ValueNumber(-12.34e5),
         ];
         parse_and_compare_seq(&input_data, &target_result);
-    }
-
-    #[test]
-    fn peek_and_next_is_equal() {
-        let mut lexer = Lexer::new("true");
-        let peek_token = (*lexer.peek().unwrap().as_ref().unwrap()).clone().token;
-        let next_token = lexer.next().unwrap().unwrap().token;
-        let end_result = lexer.next();
-        assert_eq!(peek_token, Token::ValueBoolean(true));
-        assert_eq!(peek_token, next_token);
-        assert!(end_result.is_none());
     }
 }
