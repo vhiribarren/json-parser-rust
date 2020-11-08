@@ -56,10 +56,25 @@ pub struct Lexer<'a> {
 }
 
 fn string_to_unicode_char(number: &str) -> Option<char> {
-    // https://stackoverflow.com/questions/40055279/parse-a-string-containing-a-unicode-number-into-the-corresponding-unicode-charac
     u32::from_str_radix(number, 16)
         .ok()
         .and_then(std::char::from_u32)
+}
+
+fn is_high_surrogate(number: &str) -> bool {
+    assert!(number.len() == 4);
+    match u16::from_str_radix(number, 16) {
+        Ok(high) => high >= 0xD800 && high <= 0xDBFF,
+        Err(_) => false,
+    }
+}
+
+fn convert_surrogate_pairs(high: &str, low: &str) -> Option<char> {
+    assert!(high.len() == 4);
+    assert!(low.len() == 4);
+    let h = u32::from_str_radix(high, 16).unwrap();
+    let l = u32::from_str_radix(low, 16).unwrap();
+    std::char::from_u32 ((h - 0xD800) * 0x400 + l - 0xDC00 + 0x10000 )
 }
 
 impl std::iter::Iterator for Lexer<'_> {
@@ -125,6 +140,14 @@ impl<'a> Lexer<'a> {
         next_value
     }
 
+    fn consume_n_times(&mut self, n: usize) -> Option<String> {
+        let mut result = String::new();
+        for _ in 0..n {
+            result.push(self.consume_char().unwrap());
+        }
+        Some(result)
+    }
+
     fn peek_char(&mut self) -> Option<&char> {
         self.data_iter.peek()
     }
@@ -144,6 +167,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_seq_and_emit(&mut self, pattern: &[char], token: Token) -> LexerResult {
+        self.consume_seq(pattern)?;
+        Ok(self.build_result(token))
+    }
+
+    fn consume_seq(&mut self, pattern: &[char]) -> Result<(), JsonError> {
         for &target_char in pattern.iter() {
             let candidate_char = self.consume_char().ok_or_else(|| {
                 self.build_error(format!("End of stream while waiting for '{}'", target_char))
@@ -155,7 +183,7 @@ impl<'a> Lexer<'a> {
                 )));
             }
         }
-        Ok(self.build_result(token))
+        Ok(())
     }
 
     fn consume_string(&mut self) -> LexerResult {
@@ -180,16 +208,21 @@ impl<'a> Lexer<'a> {
                     'r' => '\u{000D}',
                     't' => '\u{0009}',
                     'u' => {
-                        let mut unicode_char = String::new();
-                        for _ in 0..4 {
-                            unicode_char.push(self.consume_char().unwrap());
+                        let unicode_char = self.consume_n_times(4).unwrap();
+                        if is_high_surrogate(&unicode_char) {
+                            let high_surrogate = unicode_char;
+                            self.consume_seq(&['\\', 'u'])?;
+                            let low_surrogate = self.consume_n_times(4).unwrap();
+                            convert_surrogate_pairs(&high_surrogate, &low_surrogate).unwrap()
                         }
-                        string_to_unicode_char(unicode_char.as_str()).ok_or_else(|| {
-                            self.build_error(format!(
-                                "Could not convert {} to unicode",
-                                unicode_char
-                            ))
-                        })?
+                        else {
+                            string_to_unicode_char(unicode_char.as_str()).ok_or_else(|| {
+                                self.build_error(format!(
+                                    "Could not convert {} to unicode",
+                                    unicode_char
+                                ))
+                            })?
+                        }
                     }
                     rest => {
                         return Err(
