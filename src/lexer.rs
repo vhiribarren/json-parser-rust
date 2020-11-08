@@ -72,9 +72,9 @@ fn is_high_surrogate(number: &str) -> bool {
 fn convert_surrogate_pairs(high: &str, low: &str) -> Option<char> {
     assert!(high.len() == 4);
     assert!(low.len() == 4);
-    let h = u32::from_str_radix(high, 16).unwrap();
-    let l = u32::from_str_radix(low, 16).unwrap();
-    std::char::from_u32 ((h - 0xD800) * 0x400 + l - 0xDC00 + 0x10000 )
+    let h = u32::from_str_radix(high, 16).ok()?;
+    let l = u32::from_str_radix(low, 16).ok()?;
+    std::char::from_u32((h - 0xD800) * 0x400 + l - 0xDC00 + 0x10000)
 }
 
 impl std::iter::Iterator for Lexer<'_> {
@@ -126,6 +126,19 @@ impl<'a> Lexer<'a> {
         self.token_context = self.char_context.clone();
     }
 
+    fn peek_char(&mut self) -> Option<&char> {
+        self.data_iter.peek()
+    }
+
+    fn trim_whitespace_and_peek(&mut self) -> Option<char> {
+        loop {
+            match self.peek_char()? {
+                ' ' | '\t' | '\r' | '\n' => self.consume_char(),
+                &candidate => return Some(candidate),
+            };
+        }
+    }
+
     fn consume_char(&mut self) -> Option<char> {
         let next_value = self.data_iter.next();
         if let Some(c) = next_value {
@@ -140,35 +153,24 @@ impl<'a> Lexer<'a> {
         next_value
     }
 
-    fn consume_n_times(&mut self, n: usize) -> Option<String> {
+    fn consume_n_times(&mut self, n: usize) -> Result<String, JsonError> {
         let mut result = String::new();
         for _ in 0..n {
-            result.push(self.consume_char().unwrap());
+            let c = self.consume_char().ok_or_else(|| {
+                self.build_error(String::from(
+                    "End of stream while waiting for more characters",
+                ))
+            })?;
+            result.push(c);
         }
-        Some(result)
-    }
-
-    fn peek_char(&mut self) -> Option<&char> {
-        self.data_iter.peek()
-    }
-
-    fn trim_whitespace_and_peek(&mut self) -> Option<char> {
-        loop {
-            match self.peek_char()? {
-                ' ' | '\t' | '\r' | '\n' => self.consume_char(),
-                &candidate => return Some(candidate),
-            };
-        }
+        Ok(result)
     }
 
     fn consume_next_and_emit(&mut self, token: Token) -> LexerResult {
-        self.consume_char();
-        Ok(self.build_result(token))
-    }
-
-    fn consume_seq_and_emit(&mut self, pattern: &[char], token: Token) -> LexerResult {
-        self.consume_seq(pattern)?;
-        Ok(self.build_result(token))
+        match self.consume_char() {
+            None => Err(self.build_error(String::from("No more data to read."))),
+            Some(_) => Ok(self.build_result(token)),
+        }
     }
 
     fn consume_seq(&mut self, pattern: &[char]) -> Result<(), JsonError> {
@@ -186,6 +188,11 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
+    fn consume_seq_and_emit(&mut self, pattern: &[char], token: Token) -> LexerResult {
+        self.consume_seq(pattern)?;
+        Ok(self.build_result(token))
+    }
+
     fn consume_string(&mut self) -> LexerResult {
         match self.consume_char() {
             Some('"') => (),
@@ -198,38 +205,42 @@ impl<'a> Lexer<'a> {
                 self.build_error(String::from("EOF encountered while recognizing a string"))
             })?;
             if is_escaping {
-                let transcoded_char = match c {
-                    '"' => '\u{0022}',
-                    '\\' => '\u{005C}',
-                    '/' => '\u{002F}',
-                    'b' => '\u{0008}',
-                    'f' => '\u{000C}',
-                    'n' => '\u{000A}',
-                    'r' => '\u{000D}',
-                    't' => '\u{0009}',
-                    'u' => {
-                        let unicode_char = self.consume_n_times(4).unwrap();
-                        if is_high_surrogate(&unicode_char) {
-                            let high_surrogate = unicode_char;
-                            self.consume_seq(&['\\', 'u'])?;
-                            let low_surrogate = self.consume_n_times(4).unwrap();
-                            convert_surrogate_pairs(&high_surrogate, &low_surrogate).unwrap()
+                let transcoded_char =
+                    match c {
+                        '"' => '\u{0022}',
+                        '\\' => '\u{005C}',
+                        '/' => '\u{002F}',
+                        'b' => '\u{0008}',
+                        'f' => '\u{000C}',
+                        'n' => '\u{000A}',
+                        'r' => '\u{000D}',
+                        't' => '\u{0009}',
+                        'u' => {
+                            let unicode_char = self.consume_n_times(4)?;
+                            if is_high_surrogate(&unicode_char) {
+                                let high_surrogate = unicode_char;
+                                self.consume_seq(&['\\', 'u'])?;
+                                let low_surrogate = self.consume_n_times(4)?;
+                                convert_surrogate_pairs(&high_surrogate, &low_surrogate)
+                                    .ok_or_else(|| {
+                                        self.build_error(String::from(
+                                            "Issue while parsing provided unicode value.",
+                                        ))
+                                    })?
+                            } else {
+                                string_to_unicode_char(unicode_char.as_str()).ok_or_else(|| {
+                                    self.build_error(format!(
+                                        "Could not convert {} to unicode",
+                                        unicode_char
+                                    ))
+                                })?
+                            }
                         }
-                        else {
-                            string_to_unicode_char(unicode_char.as_str()).ok_or_else(|| {
-                                self.build_error(format!(
-                                    "Could not convert {} to unicode",
-                                    unicode_char
-                                ))
-                            })?
+                        rest => {
+                            return Err(self
+                                .build_error(format!("'{} is not an escapable character'", rest)))
                         }
-                    }
-                    rest => {
-                        return Err(
-                            self.build_error(format!("'{} is not an escapable character'", rest))
-                        )
-                    }
-                };
+                    };
                 result.push(transcoded_char);
                 is_escaping = false;
                 continue;
